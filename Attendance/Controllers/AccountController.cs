@@ -3,6 +3,10 @@ using Attendance.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 
 namespace Attendance.Controllers
 {
@@ -11,10 +15,12 @@ namespace Attendance.Controllers
     public class AccountController : ControllerBase
     {
         private readonly UserManager<ApplicationUser> _userManager;
-        public AccountController(UserManager<ApplicationUser> userManager)
+        private readonly IConfiguration configuration;
+
+        public AccountController(UserManager<ApplicationUser> userManager , IConfiguration configuration)
         {
             _userManager = userManager;
-
+            this.configuration = configuration;
         }
         [HttpPost("Register")]
         public async Task<ActionResult> Register(RegisterDto registerDto)
@@ -42,24 +48,59 @@ namespace Attendance.Controllers
             }
         }
         [HttpPost("login")]
-        public ActionResult login(LoginDto loginDto)
+        public async Task<ActionResult> login(LoginDto loginDto)
         {
-            ApplicationUser user =  _userManager.FindByNameAsync( loginDto.UserName).Result;
+            if (!ModelState.IsValid)
+                return Unauthorized();
+            ApplicationUser? user = await _userManager.FindByNameAsync( loginDto.UserName);
             if (user != null)
             {
                if (_userManager.CheckPasswordAsync(user, loginDto.Password).Result)
                 {
-                    return Ok();
+                    var claims = new List<Claim>();
+                    claims.Add(new Claim(ClaimTypes.Name, user.UserName));
+                    claims.Add(new Claim(ClaimTypes.NameIdentifier, user.Id));
+                    claims.Add(new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()));
+                    var roles = await _userManager.GetRolesAsync(user);
+                    foreach (var role in roles)
+                    {
+                        claims.Add(new Claim(ClaimTypes.Role, role));
+                    }
+                    var token = new JwtSecurityToken(
+                        issuer: configuration["Jwt:Issuer"],
+                        audience: configuration["Jwt:Audience"],
+                        claims: claims,
+                        expires: DateTime.Now.AddMinutes(60),
+                        signingCredentials: new Microsoft.IdentityModel.Tokens.SigningCredentials(
+                            new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                                System.Text.Encoding.UTF8.GetBytes(configuration["Jwt:Key"])
+                                ),
+                            Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256
+                            )
+                        );
+                    var tokenString = new
+                    {
+                        Token = new JwtSecurityTokenHandler().WriteToken(token),
+                        Expiration = token.ValidTo
+
+                    };
+                    return Ok(tokenString);
+
                 }
                else
                     {
-                    ModelState.AddModelError(string.Empty, "Invalid password");
+                   return Unauthorized();
                 }
 
             }
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
-            return Ok();
+            else
+            {
+                 ModelState.AddModelError(string.Empty, "Invalid Login Attempt"); 
+            }
+            return BadRequest(ModelState);
+
+
+
         }
     }
 }
